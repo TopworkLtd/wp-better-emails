@@ -3,7 +3,7 @@
 Plugin Name: WP Better Emails
 Plugin URI: http://wordpress.org/extend/plugins/wp-better-emails/
 Description: Beautify the default text/plain WP mails into fully customizable HTML emails.
-Version: 0.4
+Version: 0.4.2-tw
 Author: Nicolas Lemoine
 Author URI: http://wordpress.org/extend/plugins/wp-better-emails/
 License: GPLv2
@@ -29,17 +29,15 @@ License: GPLv2
 
 if ( ! class_exists( 'WP_Better_Emails' ) ) {
 
-	if ( ! defined( 'WPBE_JS_URL' ) ) {
-		define( 'WPBE_JS_URL', plugin_dir_url( __FILE__ ) . 'dist/js' );
-	}
+	if ( ! defined( 'WPBE_JS_URL' ) )
+		define( 'WPBE_JS_URL', plugin_dir_url( __FILE__ ) . 'js' );
 
-	if ( ! defined( 'WPBE_CSS_URL' ) ) {
-		define( 'WPBE_CSS_URL', plugin_dir_url( __FILE__ ) . 'dist/css' );
-	}
+	if ( ! defined( 'WPBE_CSS_URL' ) )
+		define( 'WPBE_CSS_URL', plugin_dir_url( __FILE__ ) . 'css' );
 
 	class WP_Better_Emails {
 
-		var $options = [];
+		var $options = array();
 		var $page = '';
 		var $send_as_html;
 
@@ -58,6 +56,7 @@ if ( ! class_exists( 'WP_Better_Emails' ) ) {
 			add_filter( 'wp_mail_content_type', array( $this, 'set_content_type' ), 100 );
 			add_action( 'phpmailer_init',   array( $this, 'send_html' ) );
 			add_filter( 'mandrill_payload', array( $this, 'wpmandrill_compatibility' ) );
+			if (\is_plugin_active( 'mailin/sendinblue.php' )) add_filter( 'wp_mail', array( $this, 'sendinblue_compatibility' ) );
 
 			if ( ! is_admin() ) {
 				return;
@@ -71,8 +70,23 @@ if ( ! class_exists( 'WP_Better_Emails' ) ) {
 			add_action( 'admin_menu',           array( $this, 'admin_menu' ) );
 			add_action( 'wp_ajax_send_preview', array( $this, 'ajax_send_preview' ) );
 
+			if ( version_compare( $wp_version, '3.2.1', '<=' ) ) {
+				add_action( 'admin_head', array( $this, 'load_wp_tiny_mce' ) );
+			}
+
+			if ( version_compare( $wp_version, '3.2', '<' ) && version_compare( $wp_version, '3.0.6', '>' ) ) {
+				add_action( 'admin_print_footer_scripts', 'wp_tiny_mce_preload_dialogs' );
+			}
+
 			// Filters
 			add_filter( 'plugin_action_links_' . plugin_basename( __FILE__ ), array( $this, 'settings_link' ) );
+			add_filter( 'mce_external_plugins', array( $this, 'tinymce_plugins' ) );
+			add_filter( 'mce_buttons',          array( $this, 'tinymce_buttons' ) );
+			add_filter( 'tiny_mce_before_init', array( $this, 'tinymce_config' ) );
+
+			if ( isset( $_GET['page'] ) && $_GET['page'] == 'wpbe_options' ) {
+            	add_action('current_screen', array( $this, 'contextual_help' ), 10, 1);
+            }
 
 		}
 
@@ -94,19 +108,15 @@ if ( ! class_exists( 'WP_Better_Emails' ) ) {
 
 			// HTML default template
 			$template = '';
-			@require 'templates/template.php';
+			@require 'templates/template-1.php';
 
 			// Plain-text default template
-			ob_start();
-?>
-%content%
+			$plaintext = '%content%
 
 ---
 
 Email sent %date% @ %time%
-For any requests, please contact %admin_email%'
-<?php
-			$plaintext = ob_get_clean();
+For any requests, please contact %admin_email%';
 
 			// Setup options array
 			$this->options = array(
@@ -129,8 +139,8 @@ For any requests, please contact %admin_email%'
 		 */
 		function init() {
 			register_setting( 'wpbe_full_options', 'wpbe_options', array( $this, 'validate_options' ) );
-			wp_register_script( 'wpbe-admin-script', WPBE_JS_URL . '/admin.js',['jquery', 'thickbox'], null, true );
-			wp_register_style( 'wpbe-admin-style', WPBE_CSS_URL . '/wpbe.css' );
+			wp_register_script( 'wpbe-admin-script', WPBE_JS_URL . '/wpbe-admin-script.js', array( 'jquery', 'thickbox' ), null, true );
+			wp_register_style( 'wpbe-admin-style', WPBE_CSS_URL . '/wpbe-admin-style.css' );
 		}
 
 		/**
@@ -154,6 +164,15 @@ For any requests, please contact %admin_email%'
 		 * @global $wp_version
 		 */
 		function activate() {
+			global $wp_version;
+			// Prevent activation if requirements are not met
+			// WP 2.8 required
+			if ( version_compare( $wp_version, '2.8', '<=' ) ) {
+				deactivate_plugins( __FILE__ );
+
+				wp_die( __( 'WP Better Emails requires WordPress 2.8 or newer.', 'wp-better-emails' ), __( 'Upgrade your Wordpress installation.', 'wp-better-emails' ) );
+			}
+
 			if ( ! is_multisite() ) {
 				$this->set_options();
 			} else {
@@ -167,6 +186,7 @@ For any requests, please contact %admin_email%'
 					}
 				}
 			}
+
 		}
 
 		/**
@@ -175,34 +195,27 @@ For any requests, please contact %admin_email%'
 		 * @since 0.1
 		 */
 		function admin_menu() {
-			$this->page = add_options_page(
-				__( 'Email settings', 'wp-better-emails' ),
-				__( 'WP Better Emails', 'wp-better-emails' ),
-				'administrator',
-				'wpbe_options',
-				array( $this, 'admin_page' )
-			);
+			$this->page = add_options_page( __( 'Email settings', 'wp-better-emails' ), __( 'WP Better Emails', 'wp-better-emails' ), 'administrator', 'wpbe_options', array( $this, 'admin_page' ) );
 
-			add_action( 'load-' . $this->page, [$this, 'load_hooks']);
+			add_action( 'admin_print_scripts-' . $this->page, array( $this, 'admin_print_script' ) );
+			add_action( 'admin_print_styles-' . $this->page, array( $this, 'admin_print_style' ) );
 		}
 
 		/**
-		 * Fire WP Better Emails admin page hooks
+		 * Check if we're on the plugin page
 		 *
-		 * @since 0.5
+		 * @since 0.2
+		 * @global type $page_hook
+		 * @return type
 		 */
-		function load_hooks() {
-			// Add help tab
-			$this->add_help_tab();
+		function is_wpbe_page() {
+			global $page_hook;
 
-			// Tiny MCE
-			add_filter( 'mce_external_plugins', array( $this, 'tinymce_plugins' ) );
-			add_filter( 'mce_buttons',          array( $this, 'tinymce_buttons' ) );
-			add_filter( 'tiny_mce_before_init', array( $this, 'tinymce_config' ) );
+			if ( $page_hook === $this->page ) {
+				return true;
+			}
 
-			// Scripts & styles
-			add_action( 'admin_print_scripts', array( $this, 'admin_print_script' ) );
-			add_action( 'admin_print_styles', array( $this, 'admin_print_style' ) );
+			return false;
 		}
 
 		/**
@@ -217,6 +230,7 @@ For any requests, please contact %admin_email%'
 			$protocol = isset( $_SERVER["HTTPS"] ) ? 'https://' : 'http://';
 
 			$ajax_vars = array(
+				'url'    => admin_url( 'admin-ajax.php', $protocol ),
 				'nonce'  => wp_create_nonce( 'email_preview' ),
 				'action' => 'send_preview'
 			);
@@ -254,8 +268,6 @@ For any requests, please contact %admin_email%'
 		 * @return array $input Sanitized values
 		 */
 		function validate_options( $input ) {
-
-			return $input;
 
 			$from_email = strtolower( $input['from_email'] );
 
@@ -481,6 +493,21 @@ For any requests, please contact %admin_email%'
 		}
 
 		/**
+		 * Make templating compatible with SendInBlue
+		 * @since 0.4.2
+		 * @param  array $message
+		 * @return array
+		 */
+		function sendinblue_compatibility( $message ) {
+
+			if ( $this->check_template() ) {
+				$message['message'] = $this->process_email_html( $message['message'] );
+			}
+
+			return $message;
+		}
+
+		/**
 		 * Add the email template and set it as multipart.
 		 *
 		 * @since 0.1
@@ -566,19 +593,30 @@ For any requests, please contact %admin_email%'
 		 * Help on template variables in contextual help
 		 *
 		 * @since 0.2
+		 * @global string $page
+		 * @param string $contextual_help
+		 * @param string $screen_id
+		 * @param string $screen
 		 */
-		function add_help_tab() {
-			$screen = get_current_screen();
+		function contextual_help( $screen ) {
+			$content = '<p>' . __( 'Some dynamic tags can be included in your email template :', 'wp-better-emails' ) . '</p>
+				<ul>
+					<li>' . __( '<strong>%content%</strong> : will be replaced with the message content.', 'wp-better-emails' ) . '<br />
+					<span class="description"> ' . __( 'NOTE: The content tag is <strong>required</strong>, WP Better Emails will be automatically desactivated if no content tag is found.', 'wp-better-emails' ) . '</span></li>
+					<li>' . __( '<strong>%blog_url%</strong> : will be replaced with your blog URL.', 'wp-better-emails' ) . '</li>
+					<li>' . __( '<strong>%home_url%</strong> : will be replaced with your home URL.', 'wp-better-emails' ) . '</li>
+					<li>' . __( '<strong>%blog_name%</strong> : will be replaced with your blog name.', 'wp-better-emails' ) . '</li>
+					<li>' . __( '<strong>%blog_description%</strong> : will be replaced with your blog description.', 'wp-better-emails' ) . '</li>
+					<li>' . __( '<strong>%admin_email%</strong> : will be replaced with admin email.', 'wp-better-emails' ) . '</li>
+					<li>' . __( '<strong>%date%</strong> : will be replaced with current date, as formatted in <a href="options-general.php">general options</a>.', 'wp-better-emails' ) . '</li>
+					<li>' . __( '<strong>%time%</strong> : will be replaced with current time, as formatted in <a href="options-general.php">general options</a>.', 'wp-better-emails' ) . '</li>
+				</ul>';
 
-			ob_start();
-			require 'views/help.php';
-			$content = ob_get_clean();
-
-			$screen->add_help_tab([
-				'id' => 'wpbe_help',
-				'title' => 'Template help',
-				'content' => $content,
-			]);
+        	$screen->add_help_tab( array(
+        		'id'      => 'better_email_help_tab',
+        		'title'   => __( 'Help' ),
+        		'content' => $content,
+        	) );
 		}
 
 		/**
@@ -593,8 +631,30 @@ For any requests, please contact %admin_email%'
 		 * @return array
 		 */
 		function tinymce_plugins( $external_plugins ) {
-			$external_plugins['codemirror'] = plugins_url('dist/js/plugins/codemirror/plugin.js', __FILE__);
-			$external_plugins['fullpage'] = plugins_url('dist/js/plugins/fullpage.js', __FILE__);
+			global $wp_version;
+
+			if ( ! $this->is_wpbe_page() ) {
+				return $external_plugins;
+			}
+
+			$fullpage = array();
+
+			if ( version_compare( $wp_version, '3.2', '<' ) ) {
+				$fullpage = array(
+					'fullpage' => plugins_url( 'tinymce-plugins/3.3.x/fullpage/editor_plugin.js', __FILE__ )
+				);
+			} else {
+				$fullpage = array(
+					'fullpage' => plugins_url( 'tinymce-plugins/3.4.x/fullpage/editor_plugin.js', __FILE__ )
+				);
+			}
+
+			$cmseditor = array(
+				'cmseditor' => plugins_url( 'tinymce-plugins/cmseditor/editor_plugin.js', __FILE__ )
+			);
+
+			$external_plugins = $external_plugins + $fullpage + $cmseditor;
+
 			return $external_plugins;
 		}
 
@@ -608,7 +668,10 @@ For any requests, please contact %admin_email%'
 		 * @return type
 		 */
 		function tinymce_buttons( $buttons ) {
-			array_push( $buttons, 'code' );
+			if ( $this->is_wpbe_page() ) {
+				array_push( $buttons, 'cmseditor' );
+			}
+
 			return $buttons;
 		}
 
@@ -619,7 +682,11 @@ For any requests, please contact %admin_email%'
 		 * @return boolean
 		 */
 		function tinymce_config( $init ) {
-			// $init['remove_linebreaks'] = false;
+			if ( ! $this->is_wpbe_page() )
+				return $init;
+
+			$init['remove_linebreaks'] = false;
+			$init['content_css']       = ''; // WP =< 3.0
 
 			if ( isset( $init['extended_valid_elements'] ) ) {
 				$init['extended_valid_elements'] = $init['extended_valid_elements'] . ',td[*]';
@@ -629,18 +696,47 @@ For any requests, please contact %admin_email%'
 		}
 
 		/**
+		 * Load WP tinyMCE editor
+		 *
+		 * @since 0.2
+		 */
+		function load_wp_tiny_mce() {
+			if ( ! $this->is_wpbe_page() ) {
+				return;
+			}
+
+			$settings = array(
+				'editor_selector' => 'wpbe_template',
+				'height'          => '400'
+			);
+
+			wp_tiny_mce( false, $settings );
+		}
+
+		/**
 		 * Print WP TinyMCE editor to edit template
 		 *
 		 * @since 0.2
 		 * @global string $wp_version
 		 */
 		function template_editor() {
-			wp_editor( $this->options['template'], 'wpbe_template', [
-				'wpautop'       => false,
-				'editor_class'  => 'wpbe_template',
-				'quicktags'     => false,
-				'textarea_name' => 'wpbe_options[template]'
-			] );
+			global $wp_version;
+
+			if ( version_compare( $wp_version, '3.2.1', '<=' ) ) {
+?>
+				<textarea id="wpbe_template" class="wpbe_template" name="wpbe_options[template]" cols="80" rows="10"><?php echo $this->options['template']; ?></textarea>
+				<?php
+			} else {
+				// WP >= 3.3
+				$settings = array(
+					'wpautop'       => false,
+					'editor_class'  => 'wpbe_template',
+					'quicktags'     => false,
+					'textarea_name' => 'wpbe_options[template]'
+				);
+
+				wp_editor( $this->options['template'], 'wpbe_template', $settings );
+			}
 		}
 
 		/**
