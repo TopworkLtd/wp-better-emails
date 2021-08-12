@@ -3,7 +3,7 @@
 Plugin Name: WP Better Emails
 Plugin URI: http://wordpress.org/extend/plugins/wp-better-emails/
 Description: Beautify the default text/plain WP mails into fully customizable HTML emails.
-Version: 0.4.2-tw
+Version: 0.4.3-tw
 Author: Nicolas Lemoine
 Author URI: http://wordpress.org/extend/plugins/wp-better-emails/
 License: GPLv2
@@ -57,6 +57,7 @@ if ( ! class_exists( 'WP_Better_Emails' ) ) {
 			add_action( 'phpmailer_init',   array( $this, 'send_html' ) );
 			add_filter( 'mandrill_payload', array( $this, 'wpmandrill_compatibility' ) );
 			if (\is_plugin_active( 'mailin/sendinblue.php' )) add_filter( 'wp_mail', array( $this, 'sendinblue_compatibility' ) );
+			if (\is_plugin_active( 'wp-mail-smtp/wp_mail_smtp.php' )) add_filter( 'wp_mail', array( $this, 'sendinblue_compatibility' ) );
 
 			if ( ! is_admin() ) {
 				return;
